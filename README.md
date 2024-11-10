@@ -12,7 +12,7 @@ The files related to the credit risk problem are:
 * train.csv
 
 
-## 1. Visitor Prediction Using Time Series Forecasting - 2023
+## 2. Visitor Prediction Using Time Series Forecasting - 2023
 ### Problem Introduction:
 
 Our goal was to predict visitor traffic to IKEA locations in two Spanish cities. We started by analyzing historical data to identify key patterns like seasonality, trends, and anomalies. For the forecasting model, we ultimately used ARIMA with distinct parameters for each city. Due to privacy constraints, only the ARIMA analysis script is shared. You can view the competition results, where we placed 3rd with the RMSE metric, here: https://www.kaggle.com/competitions/datafest-spain-2023/leaderboard .

@@ -1,0 +1,451 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+datos = read.csv(file = "/visits_train.csv")
+visitas = datos$visits
+plot(visitas)
+```
+
+
+```{r}
+visitas.ts = ts(visitas, frequency = 7)
+plot(visitas.ts)
+```
+Detectamos posibles outliers, vamos a ver qué detecta el sistema, para ello instalamos los paquetes necesarios
+```{r}
+library(forecast)
+library(tsoutliers)
+library(fma)
+library(expmooth)
+```
+
+## Madrid
+
+```{r}
+madrid = read.csv("/madrid_ordenado.csv")
+
+head(madrid)
+```
+
+```{r}
+visitas_madrid = madrid$visits
+plot(visitas_madrid)
+```
+
+```{r}
+visitas_madrid.ts = ts(visitas_madrid, frequency = 7)
+plot(visitas_madrid.ts)
+```
+### Cálculo de outliers:
+
+```{r}
+outliers.visitas_madrid=tsoutliers::tso(visitas_madrid.ts, types=c("AO","LS"), maxit.iloop=10)
+```
+
+```{r}
+outliers.visitas_madrid
+```
+
+```{r}
+plot(outliers.visitas_madrid)
+```
+Observamos dos casos distintos:
+- Un dia en el que la tienda ha estado cerrada 
+- El resto de outliers se deben a días festivos, en los que suben las visitas.
+
+```{r}
+# Lista de posiciones a eliminar
+posiciones <- c(193,239,246,251,366,381,530,550,558,587,604,611,616)
+
+for (i in posiciones) {
+  madrid$visits[i] <- (madrid$visits[i-1] + madrid$visits[i+1])/2
+}
+```
+
+
+```{r}
+media <- mean(visitas_madrid[1:31])
+media #media de visitas en el mes de marzo 2021
+# le imputamos la media de ese mes a la primera observacion
+madrid$visits[1] <- media
+```
+```{r}
+visitas_madrid = madrid$visits
+plot(visitas_madrid)
+```
+
+Una vez imputados los outliers, procedemos a analizar el modelo 
+
+```{r}
+visitas_madrid.ts <- ts(visitas_madrid, frequency = 7)
+
+library(forecast)
+visit_mad_dec <- decompose(visitas_madrid.ts)
+plot(visit_mad_dec)
+```
+Comentarios: 
+tendencia creciente, 
+a primera vista no parece que tenga componente cíclica, 
+si hay componente estacional 
+
+Además se observa que la serie no tiene homocedasticidad, para ello, lo primero que haremos será...:
+
+###
+```{r}
+# transformacion funcional 
+lambda=forecast::BoxCox.lambda(visitas_madrid.ts)
+lambda
+```
+
+```{r}
+visitas_mad_trans = forecast::BoxCox(visitas_madrid.ts,lambda)
+plot(visitas_mad_trans)
+```
+Comprobamos que haya que hacerle una diferenciación estacional:
+```{r}
+(num_dif_es = nsdiffs(visitas_mad_trans)) #1
+visitas_mad_dif_es=diff(visitas_mad_trans,lag=7,differences=num_dif_es) 
+plot(visitas_mad_dif_es)
+```
+
+
+Diferenciamos la serie para la tendencia creciente: 
+
+```{r}
+(ndif=ndiffs(visitas_mad_dif_es)) #1
+#diff1 = diff(visitas_mad_dif_es)
+#plot(diff1)
+```
+
+```{r}
+library(descomponer)
+periodograma(visitas_mad_dif_es)
+gperiodograma(visitas_mad_dif_es)
+```
+Concluímos no es estacional, se trata de un ARIMA 
+
+## identificacion de orden del proceso 
+
+```{r}
+#FAS 
+acf(visitas_mad_dif_es, lag.max=30)
+```
+
+el objetivo de la Fas es ver como influyen las observaciones entre si. 
+
+ARIMA (_,0,_)x(_,1,_)
+
+para la parte MA vemos que los coeficientes son significativos al principio y luego descienden
+Ma parte estacional :1 y 2 
+Ma parte no estacional: 1
+
+```{r}
+pacf(visitas_mad_dif_es, lag.max = 50)
+```
+parte estacional :1,2,3
+parte no estacional : 1,2 
+
+
+
+
+```{r}
+
+fitARIMA <- arima(visitas_mad_trans, order = c(1,0,2),seasonal=list(order= c(1,1,1), period=7), method = 'ML')
+fitARIMA #aic = -3121.04 y MRSE =0.02247724
+summary(fitARIMA)
+library(lmtest)
+coeftest(fitARIMA) 
+```
+
+```{r}
+#validacion del modelo 
+# residuos: INDEPENDENCIA, HOMOCEDASTICIDAD Y NORMALIDAD
+checkresiduals(fitARIMA)
+residuos <- fitARIMA$residuals
+plot(residuos)
+# p-value =  0.07583 > 0.05 por lo tanto  hay homocedasticidad 
+```
+
+
+
+ 
+```{r}
+auto.arima(visitas_mad_trans,allowdrift = F, trace=T)
+```
+
+
+
+##prediccion del mes de marzo 
+
+```{r}
+library(forecast)
+prediccion_mes_siguiente <- forecast(fitARIMA, h=31)
+vector_predicciones_marzo <- prediccion_mes_siguiente$mean
+```
+
+
+```{r}
+vector_predicciones_marzo #sin deshacer la tranformacion 
+```
+
+
+```{r}
+# Deshacer la transformación Box-Cox
+prediccion_boxcox <- vector_predicciones_marzo
+if (lambda != 0) {
+  prediccion_boxcox <- (lambda*prediccion_boxcox + 1)^(1/lambda)
+} else {
+  prediccion_boxcox <- exp(prediccion_boxcox)
+}
+
+```
+
+```{r}
+prediccion_boxcox
+```
+
+```{r}
+# Crear un vector de fechas del 1 de marzo de 2023 al 31 de marzo de 2023
+fechas <- seq(as.Date("2023-03-01"), as.Date("2023-03-31"), by = "day")
+
+# Crear un data frame con las fechas y las predicciones deshechas de la transformación Box-Cox
+nuevo_df_mad <- data.frame(fecha = paste0("Madrid_", format(fechas, "%Y-%m-%d")),
+                       prediccion = prediccion_boxcox)
+
+```
+
+
+# BCN
+
+```{r}
+barcelona = read.csv(file="/barcelona_ordenado.csv")
+head(barcelona)
+```
+
+
+
+```{r}
+library(lubridate)
+
+domingos = 0
+
+for (i in seq(2, nrow(barcelona), by=6)){
+  barcelona = barcelona[-i,]
+}
+# reset index
+row.names(barcelona) <- NULL
+
+```
+
+
+```{r}
+visitas_bcn = barcelona$visits
+plot(visitas_bcn)
+```
+
+```{r}
+visitas_bcn.ts = ts(visitas_bcn, frequency = 6)
+plot(visitas_bcn.ts)
+```
+
+```{r}
+outliers.visitas_bcn=tsoutliers::tso(visitas_bcn.ts, types=c("AO","LS"), maxit.iloop=10)
+```
+
+```{r}
+outliers.visitas_bcn
+```
+
+```{r}
+plot(outliers.visitas_bcn)
+```
+
+```{r}
+outs = c(9,48,115,126,141,205,211,215,260,300,302,313,319,323,360,454,470,505,517,519,523,528)
+```
+
+```{r}
+contador = 0
+valor = 0
+for (i in seq(1,26,by=5)){
+  contador= contador+1
+  valor = valor+visitas_bcn.ts[i]
+}
+print(valor/contador)
+```
+
+```{r}
+barcelona$visits[1]=35.86078
+for (i in outs){
+  print(i)
+  barcelona$visits[i] = (barcelona$visits[i-1]+barcelona$visits[i+1])/2
+}
+```
+
+```{r}
+visitas_bcn.ts=ts(barcelona$visits,frequency =6)
+```
+
+```{r}
+plot(visitas_bcn.ts)
+```
+
+Primer, transformación para estabilizar la varianza: 
+
+```{r}
+#transformacion funcional 
+lambda=forecast::BoxCox.lambda(visitas_bcn.ts)
+lambda
+```
+
+
+```{r}
+visitas_bcn_trans = forecast::BoxCox(visitas_bcn.ts,lambda)
+plot(visitas_bcn_trans)
+```
+Comprobamos que haya que hacerle una diferenciación estacional:
+```{r}
+(dif_est=nsdiffs(visitas_bcn_trans))
+```
+Diferenciamos la serie para la estacionalidad:
+```{r}
+visitas_bcn_dif=diff(visitas_bcn_trans,lag=6,differences=num_dif_es) 
+plot(visitas_bcn_dif)
+```
+
+
+```{r}
+(ndif=ndiffs(visitas_bcn_dif)) #0
+```
+
+```{r}
+library(descomponer)
+periodograma(visitas_bcn_dif)
+gperiodograma(visitas_bcn_dif)
+```
+
+
+## identificacion de orden del proceso 
+```{r}
+#FAS 
+acf(visitas_bcn_dif, lag.max=30)
+```
+MA parte no estacional: 1,2,3
+MA parte estacional:1 y 2
+```{r}
+#FAP
+pacf(visitas_bcn_dif, lag.max=30)
+```
+Para la parte no estacional :1
+Para la parte estacional :1,2
+
+```{r}
+fitARIMA <- arima(visitas_bcn_trans, order = c(1,0,2), seasonal=list(order=c(2,1,2), period = 6), method = 'ML')
+fitARIMA #aic = 109.22
+summary(fitARIMA)
+library(lmtest)
+coeftest(fitARIMA) 
+```
+
+```{r}
+#validacion del modelo 
+# residuos: INDEPENDENCIA, HOMOCEDASTICIDAD Y NORMALIDAD
+checkresiduals(fitARIMA)
+residuos <- fitARIMA$residuals
+plot(residuos)
+# p-value = 0.09173 > 0.05 por lo tanto hay homocedasticidad 
+```
+
+ 
+```{r}
+auto.arima(visitas_bcn_trans,allowdrift = F, trace=T)
+```
+
+
+
+##prediccion del mes de marzo 
+
+```{r}
+library(forecast)
+prediccion_mes_siguiente <- forecast(fitARIMA, h=27)
+vector_predicciones_marzo <- prediccion_mes_siguiente$mean
+```
+
+
+```{r}
+vector_predicciones_marzo #sin deshacer la tranformacion 
+```
+
+
+```{r}
+# Deshacer la transformación Box-Cox
+prediccion_boxcox <- vector_predicciones_marzo
+if (lambda != 0) {
+  prediccion_boxcox <- (lambda*prediccion_boxcox + 1)^(1/lambda)
+} else {
+  prediccion_boxcox <- exp(prediccion_boxcox)
+}
+
+```
+
+```{r}
+prediccion_boxcox
+length(prediccion_boxcox)
+```
+```{r}
+df_prediccion_boxcox <- data.frame(prediccion_boxcox)
+library(openxlsx)
+
+#write.xlsx(df_prediccion_boxcox, file = "personas.xlsx", rowNames = FALSE)
+
+```
+
+```{r}
+prediccion_boxcox_ceros <- read.xlsx("/personas.xlsx")
+
+```
+
+```{r}
+# Crear un vector de fechas del 1 de marzo de 2023 al 31 de marzo de 2023
+fechas <- seq(as.Date("2023-03-01"), as.Date("2023-03-31"), by = "day")
+
+# Crear un data frame con las fechas y las predicciones deshechas de la transformación Box-Cox con los 0s insertados
+nuevo_df_bcn <- data.frame(fecha = paste0("Barcelona_", format(fechas, "%Y-%m-%d")),
+                       prediccion = prediccion_boxcox_ceros)
+
+```
+
+
+```{r}
+nuevo_df_mad$prediccion=as.character(nuevo_df_mad$prediccion)
+```
+
+```{r}
+prediccion_final<- rbind(nuevo_df_bcn,nuevo_df_mad)
+```
+
+
+```{r}
+colnames(prediccion_final)[colnames(prediccion_final)=='fecha']<-'location_date'
+colnames(prediccion_final)[colnames(prediccion_final)=='prediccion']<-'visits'
+```
+
+```{r}
+prediccion_final$visits= as.numeric(prediccion_final$visits)
+```
+
+```{r}
+# imputamos los domingos por la media de domingos 2023
+for (i in seq(1,nrow(prediccion_final),1)){
+  if (prediccion_final$visits[i]==0){
+    print(i)
+    prediccion_final$visits[i]= 46.84926
+  }
+}
+
+```
+
+
+
